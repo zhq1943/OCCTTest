@@ -24,6 +24,9 @@
     <ClCompile Include="Tests.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="Viewer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ProjectHelper.h">
@@ -33,6 +36,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="Tests.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Viewer.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
