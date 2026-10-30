@@ -23,6 +23,9 @@
 #include <AIS_DisplayMode.hxx>
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_Shape.hxx>
+#include <AIS_TextLabel.hxx>
+#include <TCollection_AsciiString.hxx>
+#include <gp_Pnt.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <Quantity_Color.hxx>
@@ -49,6 +52,9 @@ public:
     void DisplayShape(const TopoDS_Shape& shape, const Quantity_Color& color,
                       AIS_DisplayMode mode = AIS_Shaded);
     void DisplayShapes(const std::vector<TopoDS_Shape>& shapes);
+    // 显示 3D 文字标注（AIS_TextLabel：屏幕朝向、固定像素高度）
+    void DisplayText(const gp_Pnt& position, const TCollection_AsciiString& text,
+                     const Quantity_Color& color, double height = 22.0);
 
     void RemoveAll();                                   // 清空已显示对象
     void FitAll();                                      // 全图适配并刷新

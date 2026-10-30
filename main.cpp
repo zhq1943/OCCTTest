@@ -20,7 +20,14 @@ int main()
     // 收集各测试生成的模型，用于视图显示
     std::vector<TopoDS_Shape> viewShapes;
 
+    // 收集 JSON 包围盒中 PlaneInfo 对应的红色交叉线
+    std::vector<TopoDS_Shape> boxCrossShapes;
+
+    // 收集 JSON 包围盒的编号文字标注（按 JSON 顺序从 1 开始，位于各 box 自身 Y 正方向面中心）
+    std::vector<TextViewLabel> boxNumberLabels;
+
     // JSON 线框扫掠测试（test3.txt：闭合多段线截面 + 单段路径，逐条建模汇总）
+    if(0)
     {
         TopoDS_Shape jsonSweepModel;
         JsonWireSweepTest("test3.txt", jsonSweepModel);
@@ -36,13 +43,24 @@ int main()
     //    TopoDS_Shape jsonWireModel;
     //    JsonWireTest("test4.txt", jsonWireModel);
     //}
-
+    if(0)
     {
         TopoDS_Shape jsonWireModel;
         JsonWireTest2("test4.txt", jsonWireModel);
         if (!jsonWireModel.IsNull())
         {
-            viewShapes.push_back(jsonWireModel);
+           // viewShapes.push_back(jsonWireModel);
+        }
+    }
+
+    // JSON 包围盒测试（test6.txt：数组内 {"Box":{...}}，逐条生成 OCCT box 实体并汇总；
+    // 带 PlaneInfo 的 Box 额外输出对应面上的交叉线，并输出按 JSON 顺序从 1 开始的编号标注）
+    {
+        TopoDS_Shape jsonBoxModel;
+        JsonBoxTest("test6.txt", jsonBoxModel, boxCrossShapes, boxNumberLabels);
+        if (!jsonBoxModel.IsNull())
+        {
+            viewShapes.push_back(jsonBoxModel);
         }
     }
 
@@ -63,6 +81,19 @@ int main()
         if (viewer.Create(1280, 800, "OCCT 视图 - 测试模型"))
         {
             viewer.DisplayShapes(viewShapes);
+            // 包围盒平面交叉线：红色线框叠加显示
+            for (size_t i = 0; i < boxCrossShapes.size(); ++i)
+            {
+                viewer.DisplayShape(boxCrossShapes[i],
+                                    Quantity_Color(Quantity_NOC_RED), AIS_WireFrame);
+            }
+            // 包围盒编号：红色文字标注在各自 box 自身 Y 正方向面的中心（按 JSON 顺序从 1 编号）
+            for (size_t i = 0; i < boxNumberLabels.size(); ++i)
+            {
+                viewer.DisplayText(boxNumberLabels[i].position,
+                                   TCollection_AsciiString(boxNumberLabels[i].text.c_str()),
+                                   Quantity_Color(Quantity_NOC_RED));
+            }
             viewer.FitAll();
             viewer.Run();
         }

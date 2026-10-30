@@ -3,6 +3,7 @@
 #include <vector>
 #include <deque>
 #include "ProjectHelper.h"
+#include "Tests.h"
 #include "Shape.h"
 #include <gp_Pnt.hxx>
 #include <gp_Dir.hxx>
@@ -2655,7 +2656,40 @@ struct JsonBoxItem
     // 解析时记录的正交性诊断（dotX_Y, dotX_Z, dotY_Z；理论上=0，实际含噪声）
     double dotXY, dotXZ, dotYZ;
     bool orthoWarn;       // 正交性偏差超 1e-6 时为 true（仍可建模，仅告警）
+
+    // 可选平面信息（Box.PlaneInfo）：PlaneDir 为平面法向，PlanePos 为平面上一点。
+    // 有该信息时，JsonBoxTest 会在对应面上绘制红色交叉线。
+    bool   hasPlane;
+    gp_Dir planeDir;
+    gp_Pnt planePos;
 };
+
+// 解析 Box 的可选 PlaneInfo（{"PlaneDir":{X,Y,Z},"PlanePos":{X,Y,Z}}）。
+// 缺失 PlaneInfo 视为无平面（hasPlane=false）；PlaneInfo 存在但字段非法时返回 false。
+static bool ParseBoxPlaneInfo(const nlohmann::json& boxObj, JsonBoxItem& b)
+{
+    b.hasPlane = false;
+    if (!boxObj.contains("PlaneInfo"))
+        return true;
+
+    const nlohmann::json& pl = boxObj["PlaneInfo"];
+    if (!pl.is_object() || !pl.contains("PlaneDir") || !pl.contains("PlanePos"))
+        return false;
+
+    gp_Pnt dir;
+    if (!ParseJsonPointCI(pl["PlaneDir"], dir, "PlaneDir"))
+        return false;
+    gp_Vec dv(dir.X(), dir.Y(), dir.Z());
+    if (dv.Magnitude() < 1.0e-9)
+        return false;
+    b.planeDir = gp_Dir(dv);
+
+    if (!ParseJsonPointCI(pl["PlanePos"], b.planePos, "PlanePos"))
+        return false;
+
+    b.hasPlane = true;
+    return true;
+}
 
 // JSON 线框条目统一容器
 struct JsonWireItem
@@ -2975,6 +3009,10 @@ static bool LoadJsonWireItems(const char* file, std::vector<JsonWireItem>& items
                               << "dotXY=" << b.dotXY << " dotXZ=" << b.dotXZ
                               << " dotYZ=" << b.dotYZ << "（仍按给定方向建模）" << std::endl;
                 }
+
+                // 可选 PlaneInfo（平面法向 + 面上一点），存在时用于绘制红色交叉线
+                if (!ParseBoxPlaneInfo(boxObj, b))
+                    throw std::runtime_error("Box.PlaneInfo 非法");
             }
             else if (elem.contains("BoxDirX") && elem.contains("BoxDirY") &&
                      elem.contains("BoxDirZ") && elem.contains("BoxSize"))
@@ -3039,6 +3077,10 @@ static bool LoadJsonWireItems(const char* file, std::vector<JsonWireItem>& items
                               << "dotXY=" << b.dotXY << " dotXZ=" << b.dotXZ
                               << " dotYZ=" << b.dotYZ << "（仍按给定方向建模）" << std::endl;
                 }
+
+                // 可选 PlaneInfo（平面法向 + 面上一点），存在时用于绘制红色交叉线
+                if (!ParseBoxPlaneInfo(elem, b))
+                    throw std::runtime_error("Box.PlaneInfo 非法");
             }
             else
             {
@@ -4109,4 +4151,283 @@ int CombineBoxTest()
     }
 
     return passCount == totalCount ? 0 : -1;
+}
+
+// ============================================================================
+// 由 Box 的 PlaneInfo 构建交叉线骨架（供视图以红色线框显示）
+// ----------------------------------------------------------------------------
+// PlaneInfo 描述包围盒的某一个面：PlaneDir 为该面法向，PlanePos 为该面上一点。
+// 在 6 个面中选出"法向与 PlaneDir 平行且 PlanePos 落在该面平面上"的那个面，
+// 取该面的两条对角线（交叉于面中心）作为交叉线，返回仅含两条 Edge 的 Compound；
+// 无 PlaneInfo 或匹配不到面时返回空 Shape，并在控制台给出提示。
+// ============================================================================
+static TopoDS_Shape BuildBoxPlaneCross(const JsonBoxItem& b, size_t itemIndex)
+{
+    if (!b.hasPlane)
+        return TopoDS_Shape();
+
+    gp_Vec ax[3] = { gp_Vec(b.boxDirX), gp_Vec(b.boxDirY), gp_Vec(b.boxDirZ) };
+    double len[3] = { b.sizeX, b.sizeY, b.sizeZ };
+
+    // 包围盒中心 = 最小角点 + 各轴半长矢量和
+    gp_Pnt center = b.minimumPoint.Translated(
+        ax[0] * (len[0] * 0.5) + ax[1] * (len[1] * 0.5) + ax[2] * (len[2] * 0.5));
+
+    // 在 6 个面中匹配 PlaneInfo：面法向与 PlaneDir 平行，且 PlanePos 落在该面所在平面上
+    const double scale = std::max(len[0], std::max(len[1], len[2]));
+    const double planeTol = 1.0e-3 * std::max(1.0, scale);
+    int axisIdx = -1, axisSign = 0;
+    double bestDist = 1.0e30;
+    for (int i = 0; i < 3; ++i)
+    {
+        const gp_Vec n = ax[i].Normalized();
+        for (int s = -1; s <= 1; s += 2)
+        {
+            const gp_Vec fn = n * (double)s;                    // 该面外法向
+            if (std::fabs(fn.Dot(gp_Vec(b.planeDir))) < 0.999)  // 法向须与 PlaneDir 平行
+                continue;
+            const gp_Pnt fc = center.Translated(n * (len[i] * 0.5) * (double)s);  // 该面中心
+            const double d = std::fabs(gp_Vec(fc, b.planePos).Dot(fn));           // PlanePos 到面距离
+            if (d <= planeTol && d < bestDist)
+            {
+                bestDist = d;
+                axisIdx = i;
+                axisSign = s;
+            }
+        }
+    }
+
+    if (axisIdx < 0)
+    {
+        std::cout << "提示：第" << (itemIndex + 1)
+                  << "条 Box 的 PlaneInfo 与包围盒任一面均不匹配，跳过交叉线绘制" << std::endl;
+        return TopoDS_Shape();
+    }
+
+    // 目标面中心 + 面内两轴（另外两个 box 轴）
+    gp_Pnt faceCenter = center.Translated(
+        ax[axisIdx].Normalized() * (len[axisIdx] * 0.5) * (double)axisSign);
+    const int iu = (axisIdx + 1) % 3;
+    const int iv = (axisIdx + 2) % 3;
+    const gp_Vec u = ax[iu].Normalized(), v = ax[iv].Normalized();
+    const double hu = len[iu] * 0.5, hv = len[iv] * 0.5;
+
+    // 面的 4 个角点（环序），两条对角线即交叉线
+    const gp_Pnt c0 = faceCenter.Translated( u * hu + v * hv);
+    const gp_Pnt c1 = faceCenter.Translated( u * hu - v * hv);
+    const gp_Pnt c2 = faceCenter.Translated(-u * hu - v * hv);
+    const gp_Pnt c3 = faceCenter.Translated(-u * hu + v * hv);
+
+    BRep_Builder builder;
+    TopoDS_Compound cross;
+    builder.MakeCompound(cross);
+    builder.Add(cross, BRepBuilderAPI_MakeEdge(c0, c2).Edge());
+    builder.Add(cross, BRepBuilderAPI_MakeEdge(c1, c3).Edge());
+    return cross;
+}
+
+// ============================================================================
+// 取 box 指定方向面的中心：在 6 个面中选出外法向与 targetNormal 最同向
+// （点积最大）的那个面，返回其面中心。用于把编号文字放到 box 自身 Y 正方向面上。
+// ============================================================================
+static gp_Pnt BoxFaceCenterToward(const JsonBoxItem& b, const gp_Dir& targetNormal)
+{
+    gp_Vec ax[3] = { gp_Vec(b.boxDirX), gp_Vec(b.boxDirY), gp_Vec(b.boxDirZ) };
+    double len[3] = { b.sizeX, b.sizeY, b.sizeZ };
+
+    gp_Pnt center = b.minimumPoint.Translated(
+        ax[0] * (len[0] * 0.5) + ax[1] * (len[1] * 0.5) + ax[2] * (len[2] * 0.5));
+
+    int bestAxis = 0, bestSign = 1;
+    double bestDot = -2.0;
+    for (int i = 0; i < 3; ++i)
+    {
+        const gp_Vec n = ax[i].Normalized();
+        for (int s = -1; s <= 1; s += 2)
+        {
+            const double d = (n * (double)s).Dot(gp_Vec(targetNormal));
+            if (d > bestDot)
+            {
+                bestDot = d;
+                bestAxis = i;
+                bestSign = s;
+            }
+        }
+    }
+
+    return center.Translated(
+        ax[bestAxis].Normalized() * (len[bestAxis] * 0.5) * (double)bestSign);
+}
+
+// ============================================================================
+// JSON 包围盒测试（test6.txt）
+// 数据格式：顶层数组，每项
+//   {"Box":{"BoxDirX":{X,Y,Z},"BoxDirY":{..},"BoxDirZ":{..},
+//           "BoxSize":{X,Y,Z},"MinimumPoint":{X,Y,Z},"PlaneInfo":{..}}}
+// 处理：复用 LoadJsonWireItems 解析 Box 条目 -> 由"最小角点 + 三正交方向 + 三向尺寸"
+//       构造 gp_Ax2，再用 BRepPrimAPI_MakeBox 生成 OCCT 原生 box 实体
+//       -> 拓扑/体积/包围盒断言 -> 汇总为 Compound 供 main.cpp 在视图中显示。
+// 带 PlaneInfo 的 Box 额外按其法向在对应面上生成交叉线（crossShapes 输出，
+// 由 main.cpp 以红色线框叠加显示）；同时按 JSON 顺序从 1 编号，编号文字锚点
+// 定位到各 box 自身 Y 正方向（BoxDirY）对应面的中心外侧（numberLabels 输出，
+// 由 main.cpp 以红色文字显示）。
+// 返回：0 = 全部成功；-1 = 解析失败或存在建模失败条目。
+// ============================================================================
+int JsonBoxTest(const char* file, TopoDS_Shape& resultModel,
+                std::vector<TopoDS_Shape>& crossShapes,
+                std::vector<TextViewLabel>& numberLabels)
+{
+    std::cout << "\n--- JSON 包围盒测试（文件: " << file << "）---" << std::endl;
+    resultModel = TopoDS_Shape();
+    crossShapes.clear();
+    numberLabels.clear();
+
+    // 1. 解析（LoadJsonWireItems 同时支持 {"Box":{...}} 包装与扁平两种写法）
+    std::vector<JsonWireItem> items;
+    if (!LoadJsonWireItems(file, items))
+        return -1;
+
+    // 2. 逐条生成 OCCT box 实体并汇总
+    BRep_Builder builder;
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+
+    int boxCount = 0, okCount = 0, failCount = 0, skipCount = 0;
+
+    for (size_t i = 0; i < items.size(); ++i)
+    {
+        const JsonWireItem& it = items[i];
+        if (it.kind != JsonWireKind::Box)
+        {
+            ++skipCount;
+            std::cout << "提示：第" << (i + 1) << " 条类型=" << it.kindName
+                      << "，本测试仅处理 Box，跳过" << std::endl;
+            continue;
+        }
+        ++boxCount;
+        const JsonBoxItem& b = it.box;
+        std::cout << "\n[第" << (i + 1) << "条] Box 尺寸=(" << b.sizeX << "," << b.sizeY
+                  << "," << b.sizeZ << ") 最小点=(" << b.minimumPoint.X() << ","
+                  << b.minimumPoint.Y() << "," << b.minimumPoint.Z() << ")" << std::endl;
+
+        TopoDS_Shape solid;
+        try
+        {
+            // gp_Ax2：原点 = 最小角点，主方向 N = BoxDirZ，X 参考 = BoxDirX；
+            // 构造函数会把 BoxDirX 正交投影到 N 的垂面（自动消除 1e-16 级数值噪声）。
+            gp_Vec vx(b.boxDirX), vz(b.boxDirZ);
+            // 轴系 Y = N × X；若数据给出的 BoxDirY 与之反向，则原点沿 BoxDirY 平移 sizeY，
+            // 保证生成的 box 覆盖数据描述的区间，而不镜像到错误一侧。
+            gp_Pnt origin = b.minimumPoint;
+            if (vz.Crossed(vx).Dot(gp_Vec(b.boxDirY)) < 0.0)
+                origin.Translate(gp_Vec(b.boxDirY) * b.sizeY);
+
+            gp_Ax2 ax2(origin, gp_Dir(vz), gp_Dir(vx));
+            BRepPrimAPI_MakeBox mkBox(ax2, b.sizeX, b.sizeY, b.sizeZ);
+            // 注意：BRepPrimAPI_MakeBox 的构造函数只初始化内部 BRepPrim_Wedge，
+            // 不会把 Done 标志置真；Done() 只在 Shape()/Solid() 触发内部构建时才被调用。
+            // 因此构造后立刻判断 IsDone() 必然为 false，必须取 Shape() 后再判空。
+            solid = mkBox.Shape();
+            if (solid.IsNull())
+                throw std::runtime_error("BRepPrimAPI_MakeBox 构造失败");
+            BRepLib::BuildCurves3d(solid);
+        }
+        catch (const Standard_ConstructionError& e)
+        {
+            std::cout << "  异常：OCCT构造错误：" << e.GetMessageString() << std::endl;
+        }
+        catch (const std::exception& e)
+        {
+            std::cout << "  异常：" << e.what() << std::endl;
+        }
+
+        if (solid.IsNull())
+        {
+            std::cout << "  状态：失败" << std::endl;
+            ++failCount;
+            continue;
+        }
+
+        // 3. 断言：拓扑合法 + 体积 = sx*sy*sz + 实际包围盒 = 数据 8 角点 AABB
+        BRepCheck_Analyzer checker(solid);
+        GProp_GProps volProps;
+        BRepGProp::VolumeProperties(solid, volProps);
+        double actualVol = volProps.Mass();
+        double expectVol = b.sizeX * b.sizeY * b.sizeZ;
+
+        double exMin[3] = { 1.0e30, 1.0e30, 1.0e30 };
+        double exMax[3] = { -1.0e30, -1.0e30, -1.0e30 };
+        for (int ix = 0; ix < 2; ++ix)
+            for (int iy = 0; iy < 2; ++iy)
+                for (int iz = 0; iz < 2; ++iz)
+                {
+                    gp_Pnt c = b.minimumPoint
+                        .Translated(gp_Vec(b.boxDirX) * (ix ? b.sizeX : 0.0))
+                        .Translated(gp_Vec(b.boxDirY) * (iy ? b.sizeY : 0.0))
+                        .Translated(gp_Vec(b.boxDirZ) * (iz ? b.sizeZ : 0.0));
+                    double cc[3] = { c.X(), c.Y(), c.Z() };
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        if (cc[k] < exMin[k]) exMin[k] = cc[k];
+                        if (cc[k] > exMax[k]) exMax[k] = cc[k];
+                    }
+                }
+
+        Bnd_Box abox;
+        BRepBndLib::Add(solid, abox);
+        double axmin, aymin, azmin, axmax, aymax, azmax;
+        abox.Get(axmin, aymin, azmin, axmax, aymax, azmax);
+
+        const double tol = 1.0e-3;
+        bool volOk = std::fabs(actualVol - expectVol) <= tol * std::max(1.0, expectVol);
+        bool bboxOk = std::fabs(axmin - exMin[0]) <= tol && std::fabs(axmax - exMax[0]) <= tol
+                   && std::fabs(aymin - exMin[1]) <= tol && std::fabs(aymax - exMax[1]) <= tol
+                   && std::fabs(azmin - exMin[2]) <= tol && std::fabs(azmax - exMax[2]) <= tol;
+
+        std::cout << "  状态：" << (checker.IsValid() ? "成功(拓扑合法)" : "成功(拓扑异常)")
+                  << "  体积=" << actualVol << "(期望 " << expectVol << ")"
+                  << (volOk ? " 通过" : " 失败")
+                  << "  包围盒" << (bboxOk ? "通过" : "失败")
+                  << " X[" << axmin << "," << axmax << "] Y[" << aymin << "," << aymax
+                  << "] Z[" << azmin << "," << azmax << "]" << std::endl;
+
+        builder.Add(compound, solid);
+        ++okCount;
+
+        // 4. 带 PlaneInfo 时，按平面法向在对应面上生成交叉线（由 main.cpp 以红色线框显示）
+        if (b.hasPlane)
+        {
+            TopoDS_Shape cross = BuildBoxPlaneCross(b, i);
+            if (!cross.IsNull())
+                crossShapes.push_back(cross);
+        }
+
+        // 5. 按 JSON 顺序编号（从 1 开始）：编号文字锚点定位到 box 自身 Y 正方向
+        //    （BoxDirY）所对应面的中心，并沿该面法向外移少量距离，避免文字贴面不可见
+        {
+            gp_Pnt yFaceCenter = BoxFaceCenterToward(b, gp_Dir(b.boxDirY));
+            const double offset = 0.01 * std::max(b.sizeX, std::max(b.sizeY, b.sizeZ));
+            yFaceCenter.Translate(gp_Vec(b.boxDirY) * offset);
+            numberLabels.push_back(TextViewLabel{ yFaceCenter, std::to_string(boxCount) });
+        }
+    }
+
+    if (okCount == 0)
+    {
+        std::cout << "错误：没有任何 Box 成功生成" << std::endl;
+        return -1;
+    }
+    resultModel = compound;
+
+    Bnd_Box totalBox;
+    BRepBndLib::Add(compound, totalBox);
+    double xmin, ymin, zmin, xmax, ymax, zmax;
+    totalBox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    std::cout << "\n汇总：Box=" << boxCount << " 成功=" << okCount << " 失败=" << failCount
+              << " 跳过=" << skipCount << " 平面交叉线=" << crossShapes.size()
+              << " 编号标注=" << numberLabels.size()
+              << " 整体范围 X[" << xmin << "," << xmax << "] Y[" << ymin << "," << ymax
+              << "] Z[" << zmin << "," << zmax << "]" << std::endl;
+
+    return failCount == 0 ? 0 : -1;
 }

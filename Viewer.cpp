@@ -7,8 +7,10 @@
 // ============================================================================
 
 #include <Aspect_GradientFillMethod.hxx>
+#include <Graphic3d_ZLayerId.hxx>
 #include <Quantity_NameOfColor.hxx>
 #include <Quantity_TypeOfColor.hxx>
+#include <TCollection_ExtendedString.hxx>
 #include <V3d_TypeOfOrientation.hxx>
 
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
@@ -183,6 +185,27 @@ void COCCTViewer::DisplayShapes(const std::vector<TopoDS_Shape>& shapes)
     {
         DisplayShape(shapes[i], Quantity_Color(palette[i % 6]), AIS_Shaded);
     }
+}
+
+// ----------------------------------------------------------------------------
+// 显示 3D 文字标注：AIS_TextLabel 以屏幕朝向渲染，锚点为模型坐标
+void COCCTViewer::DisplayText(const gp_Pnt& position, const TCollection_AsciiString& text,
+                              const Quantity_Color& color, double height)
+{
+    if (text.IsEmpty() || m_context.IsNull())
+    {
+        return;
+    }
+
+    Handle(AIS_TextLabel) label = new AIS_TextLabel();
+    label->SetText(TCollection_ExtendedString(text));
+    label->SetPosition(position);
+    label->SetColor(color);
+    label->SetHeight(height);
+    label->SetZoomable(Standard_False);   // 固定像素高度，不随缩放变化
+    // 放到 Topmost 图层（独立深度缓冲），文字始终绘制在模型之上，不会被 box 遮挡
+    label->SetZLayer(Graphic3d_ZLayerId_Topmost);
+    m_context->Display(label, Standard_False);
 }
 
 // ----------------------------------------------------------------------------
