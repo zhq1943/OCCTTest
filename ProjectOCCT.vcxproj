@@ -163,6 +163,7 @@
     <ClCompile Include="Viewer.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Algorithm.h" />
     <ClInclude Include="ProjectHelper.h" />
     <ClInclude Include="Shape.h" />
     <ClInclude Include="Tests.h" />

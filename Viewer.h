@@ -52,6 +52,9 @@ public:
     void DisplayShape(const TopoDS_Shape& shape, const Quantity_Color& color,
                       AIS_DisplayMode mode = AIS_Shaded);
     void DisplayShapes(const std::vector<TopoDS_Shape>& shapes);
+    // 透明实体 + 虚线边框：面全透明不可见，仅以虚线绘制面边界
+    void DisplayShapeDashed(const TopoDS_Shape& shape, const Quantity_Color& color,
+                            double transparency = 1.0, double lineWidth = 2.0);
     // 显示 3D 文字标注（AIS_TextLabel：屏幕朝向、固定像素高度）
     void DisplayText(const gp_Pnt& position, const TCollection_AsciiString& text,
                      const Quantity_Color& color, double height = 22.0);

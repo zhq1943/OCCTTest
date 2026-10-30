@@ -7,7 +7,9 @@
 // ============================================================================
 
 #include <Aspect_GradientFillMethod.hxx>
+#include <Aspect_TypeOfLine.hxx>
 #include <Graphic3d_ZLayerId.hxx>
+#include <Prs3d_LineAspect.hxx>
 #include <Quantity_NameOfColor.hxx>
 #include <Quantity_TypeOfColor.hxx>
 #include <TCollection_ExtendedString.hxx>
@@ -165,6 +167,28 @@ void COCCTViewer::DisplayShape(const TopoDS_Shape& shape, const Quantity_Color& 
     aisShape->SetDisplayMode(mode);
     aisShape->Attributes()->SetFaceBoundaryDraw(Standard_True); // 着色时描边，轮廓更清晰
     m_context->Display(aisShape, Standard_False);               // 延迟刷新，由 FitAll/Redraw 统一触发
+    m_displayed.push_back(aisShape);
+}
+
+// ----------------------------------------------------------------------------
+// 透明实体 + 虚线边框：面设置为指定透明度（默认 1.0 即完全透明、不可见），
+// 仅保留面边界并以虚线绘制，用于显示"总 box"的外框
+void COCCTViewer::DisplayShapeDashed(const TopoDS_Shape& shape, const Quantity_Color& color,
+                                     double transparency, double lineWidth)
+{
+    if (shape.IsNull() || m_context.IsNull())
+    {
+        return;
+    }
+
+    Handle(AIS_Shape) aisShape = new AIS_Shape(shape);
+    aisShape->SetColor(color);
+    aisShape->SetDisplayMode(AIS_Shaded);
+    aisShape->SetTransparency(transparency);
+    aisShape->Attributes()->SetFaceBoundaryDraw(Standard_True);
+    Handle(Prs3d_LineAspect) dashAspect = new Prs3d_LineAspect(color, Aspect_TOL_DASH, lineWidth);
+    aisShape->Attributes()->SetFaceBoundaryAspect(dashAspect);  // 面边界改为虚线
+    m_context->Display(aisShape, Standard_False);
     m_displayed.push_back(aisShape);
 }
 

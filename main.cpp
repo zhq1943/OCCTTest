@@ -26,6 +26,9 @@ int main()
     // 收集 JSON 包围盒的编号文字标注（按 JSON 顺序从 1 开始，位于各 box 自身 Y 正方向面中心）
     std::vector<TextViewLabel> boxNumberLabels;
 
+    // 收集同一 GroupID 的 box 合并后的总 box（透明实体 + 虚线边框显示）
+    std::vector<TopoDS_Shape> boxGroupShapes;
+
     // JSON 线框扫掠测试（test3.txt：闭合多段线截面 + 单段路径，逐条建模汇总）
     if(0)
     {
@@ -57,7 +60,7 @@ int main()
     // 带 PlaneInfo 的 Box 额外输出对应面上的交叉线，并输出按 JSON 顺序从 1 开始的编号标注）
     {
         TopoDS_Shape jsonBoxModel;
-        JsonBoxTest("test6.txt", jsonBoxModel, boxCrossShapes, boxNumberLabels);
+        JsonBoxTest("test6.txt", jsonBoxModel, boxCrossShapes, boxNumberLabels, boxGroupShapes);
         if (!jsonBoxModel.IsNull())
         {
             viewShapes.push_back(jsonBoxModel);
@@ -93,6 +96,12 @@ int main()
                 viewer.DisplayText(boxNumberLabels[i].position,
                                    TCollection_AsciiString(boxNumberLabels[i].text.c_str()),
                                    Quantity_Color(Quantity_NOC_RED));
+            }
+            // 同一 GroupID 的总 box：透明实体 + 绿色虚线边框，仅可见边框
+            for (size_t i = 0; i < boxGroupShapes.size(); ++i)
+            {
+                viewer.DisplayShapeDashed(boxGroupShapes[i],
+                                          Quantity_Color(Quantity_NOC_GREEN), 1.0, 2.0);
             }
             viewer.FitAll();
             viewer.Run();
