@@ -405,6 +405,91 @@ public:
         return MergeOrientedBox(aligned);
     }
 
+    // 整体外扩/收缩：中心不动，三条半长方向向量各自加上同一个绝对长度 dLen（不是倍数）。
+    // 示例：{Center(0,0,0), DirX(100,0,0), DirY(0,100,0), DirZ(0,0,100)} 调用
+    //       ExpandBox(10) 后 → DirX(110,0,0), DirY(0,110,0), DirZ(0,0,110)，中心不变。
+    // 方向保持不变：按 "新长度 / 原长度" 缩放原向量，支持非单位长度、非正交轴向；
+    // dLen 可为负，表示收缩。
+    // 收缩边界：任一轴收缩后半长 <= 0（含恰好为 0）时，本次调用整体拒绝——
+    //   中心、三轴、平面均保持调用前状态并返回 false，不产生退化盒（零长度轴会使
+    //   isValid() 失效）。返回 true 表示修改已生效。
+    bool ExpandBox(double dLen)
+    {
+        if (!isValid())
+            return false;
+
+        const double len[3] = { mDirX.Magnitude(), mDirY.Magnitude(), mDirZ.Magnitude() };
+        for (int i = 0; i < 3; ++i)
+        {
+            if (len[i] + dLen <= 0.0)
+                return false;   // 收缩后会退化：拒绝并保持原值
+        }
+
+        mDirX = mDirX * ((len[0] + dLen) / len[0]);
+        mDirY = mDirY * ((len[1] + dLen) / len[1]);
+        mDirZ = mDirZ * ((len[2] + dLen) / len[2]);
+        return true;
+    }
+
+    // 判断本盒与 tmp 是否相交。
+    // 语义约定（闭盒）：
+    //   相交 = 两盒闭区间点集（含边界）存在公共点，因此"仅接触"也算相交——
+    //   面贴面、棱碰棱、顶点相触、一盒整体贴附在另一盒的面上，均返回 true；
+    //   只有两盒严格分离（存在正间隙大于 dTol）时才返回 false。
+    //   dTol 为数值容差（默认 1e-6），投影间隙在该容差内视为接触，用于吸收浮点误差。
+    //  任一盒不满足 isValid()（存在零长度半长向量）时无几何意义，返回 false。
+    //
+    // 判定方式（分离轴定理 SAT，适用于任意姿态）：
+    //   本类盒子由"中心 + 三条半长方向向量"表示，三轴未强制正交，故不能退化为世界轴
+    //   AABB 区间比较。这里对两个平行六面体做完整 15 轴 SAT：
+    //     · 6 条面法向轴：dirY×dirZ、dirZ×dirX、dirX×dirY（两盒各 3 条）；
+    //     · 9 条棱向叉积轴：两盒棱方向（dirX/dirY/dirZ）的 3×3 组叉积。
+    //   对任一候选单位轴 L，两盒在该轴上的投影半径分别为
+    //     rA = |mDirX·L| + |mDirY·L| + |mDirZ·L|（对半长向量取绝对值求和，即支撑函数），
+    //     rB 同理；若 |(tmp 中心 - 本盒中心)·L| > rA + rB + dTol，则该轴分离、两盒不相交。
+    //   15 条轴均不分离时判定为相交（闭盒语义下接触即相交）。
+    bool IsIntersect(const CShape_Box& tmp, double dTol = 1.0e-6) const
+    {
+        if (!isValid() || !tmp.isValid())
+            return false;
+
+        const gp_Vec ax[3] = { mDirX, mDirY, mDirZ };
+        const gp_Vec bx[3] = { tmp.mDirX, tmp.mDirY, tmp.mDirZ };
+
+        // 收集候选分离轴：6 条面法向 + 9 条棱向叉积
+        gp_Vec axes[15];
+        int nAxis = 0;
+
+        const gp_Vec faceA[3] = { mDirY.Crossed(mDirZ), mDirZ.Crossed(mDirX), mDirX.Crossed(mDirY) };
+        const gp_Vec faceB[3] = { tmp.mDirY.Crossed(tmp.mDirZ),
+                                  tmp.mDirZ.Crossed(tmp.mDirX),
+                                  tmp.mDirX.Crossed(tmp.mDirY) };
+        for (int i = 0; i < 3; ++i)
+        {
+            axes[nAxis++] = faceA[i];
+            axes[nAxis++] = faceB[i];
+        }
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                axes[nAxis++] = ax[i].Crossed(bx[j]);
+
+        const gp_Vec dCenter(mCenter, tmp.mCenter);
+        for (int a = 0; a < nAxis; ++a)
+        {
+            const double dMag = axes[a].Magnitude();
+            if (dMag < 1.0e-12) continue;          // 退化轴（两棱平行），跳过
+            const gp_Vec L = axes[a] / dMag;
+
+            const double rA = std::fabs(mDirX.Dot(L)) + std::fabs(mDirY.Dot(L)) + std::fabs(mDirZ.Dot(L));
+            const double rB = std::fabs(tmp.mDirX.Dot(L)) + std::fabs(tmp.mDirY.Dot(L))
+                            + std::fabs(tmp.mDirZ.Dot(L));
+
+            if (std::fabs(dCenter.Dot(L)) > rA + rB + dTol)
+                return false;                      // 找到分离轴
+        }
+        return true;                               // 所有候选轴均未分离
+    }
+
     // 8 顶点 = center ± dirX ± dirY ± dirZ
     bool GetBoxVertices(std::vector<gp_Pnt>& outVerts) const
     {
