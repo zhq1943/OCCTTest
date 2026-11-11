@@ -101,12 +101,32 @@ struct JsonPrismItem
     double thickness;               // 拉伸厚度
 };
 
-// JSON 线框条目标签：标识该条目是棱柱、扫掠、包围盒还是其他类型
+// JSON 地面线定义（test6.txt 中 Ground 条目）
+// 数据来源：{"Ground":[{"Line":{"start":{x,y,z},"end":{x,y,z}}}, ...]}
+// Ground 是一个由若干独立线段组成的数组（不是有序多段线），每段自带起终点，
+// 坐标为小写 x/y/z 的 3D 点（当前数据 Z 恒为 0，即位于世界 Z=0 平面）。
+struct JsonGroundItem
+{
+    std::vector<std::pair<gp_Pnt, gp_Pnt> > lines; // 线段（起点, 终点）
+};
+
+// JSON 面轮廓线定义（test6.txt 中 FaceInfo 条目）
+// 数据来源：{"FaceInfo":[{"start":{x,y,z},"end":{x,y,z}}, ...]}
+// 与 Ground 类似是独立线段数组，区别是不套 "Line" 包装，start/end 直接为元素成员；
+// 当前数据为竖直矩形面的四条边（Z 从 0 到 2800）。
+struct JsonFaceInfoItem
+{
+    std::vector<std::pair<gp_Pnt, gp_Pnt> > lines; // 线段（起点, 终点）
+};
+
+// JSON 线框条目标签：标识该条目是棱柱、扫掠、包围盒、地面线、面轮廓线还是其他类型
 enum class JsonWireKind
 {
     Prism,
     Sweep,
-    Box,     // 包围盒：3 个正交方向向量 + 3 向尺寸 + 最小角点
+    Box,      // 包围盒：3 个正交方向向量 + 3 向尺寸 + 最小角点
+    Ground,   // 地面线：独立线段数组（元素套 Line）
+    FaceInfo, // 面轮廓线：独立线段数组（元素直接含 start/end）
     Other
 };
 
@@ -138,10 +158,12 @@ struct JsonBoxItem
 struct JsonWireItem
 {
     JsonWireKind kind;
-    JsonPrismItem prism;   // kind==Prism 时有效
-    JsonSweepItem sweep;   // kind==Sweep 时有效
-    JsonBoxItem   box;     // kind==Box 时有效
-    std::string kindName;  // 调试用：原始类型名
+    JsonPrismItem  prism;   // kind==Prism 时有效
+    JsonSweepItem  sweep;   // kind==Sweep 时有效
+    JsonBoxItem    box;      // kind==Box 时有效
+    JsonGroundItem ground;   // kind==Ground 时有效
+    JsonFaceInfoItem face;   // kind==FaceInfo 时有效
+    std::string kindName;    // 调试用：原始类型名
 };
 
 // ---------- 测试辅助类 ----------
@@ -200,6 +222,9 @@ int JsonWireTest2(const char* file, TopoDS_Shape& resultModel);
 int JsonBoxTest(const char* file, TopoDS_Shape& resultModel,
                 std::vector<TopoDS_Shape>& crossShapes,
                 std::vector<TextViewLabel>& numberLabels,
-                std::vector<TopoDS_Shape>& groupBoxes);
+                std::vector<TopoDS_Shape>& groupBoxes,
+                std::vector<TopoDS_Shape>& groundLines,
+                std::vector<TopoDS_Shape>& faceLines);
 int ShapeClassTest();
 int CombineBoxTest();
+int ExpandBoxTest();

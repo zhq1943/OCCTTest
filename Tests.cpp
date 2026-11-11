@@ -2957,6 +2957,60 @@ static bool LoadJsonWireItems(const char* file, std::vector<JsonWireItem>& items
                 if (!ParseBoxPlaneInfo(elem, b))
                     throw std::runtime_error("Box.PlaneInfo 非法");
             }
+            else if (elem.contains("Ground"))
+            {
+                // 地面线：[{"Line":{"start":{x,y,z},"end":{x,y,z}}}, ...]
+                // 每个元素是一段独立线段（不是有序多段线），坐标为小写 x/y/z。
+                item.kind = JsonWireKind::Ground;
+                item.kindName = "Ground";
+                const nlohmann::json& g = elem["Ground"];
+                if (!g.is_array())
+                    throw std::runtime_error("Ground 不是数组");
+                for (size_t gi = 0; gi < g.size(); ++gi)
+                {
+                    const nlohmann::json& seg = g[gi];
+                    if (!seg.is_object() || !seg.contains("Line") || !seg["Line"].is_object())
+                        throw std::runtime_error("Ground 第" + std::to_string(gi + 1)
+                                                 + " 项缺少 Line 对象");
+                    const nlohmann::json& line = seg["Line"];
+                    if (!line.contains("start") || !line.contains("end"))
+                        throw std::runtime_error("Ground 第" + std::to_string(gi + 1)
+                                                 + " 项 Line 缺少 start/end");
+                    gp_Pnt ps, pe;
+                    if (!ParseJsonPointCI(line["start"], ps, "Ground.Line.start") ||
+                        !ParseJsonPointCI(line["end"],   pe, "Ground.Line.end"))
+                        throw std::runtime_error("Ground 第" + std::to_string(gi + 1)
+                                                 + " 项端点非法");
+                    item.ground.lines.push_back(std::make_pair(ps, pe));
+                }
+                if (item.ground.lines.empty())
+                    throw std::runtime_error("Ground 数组为空");
+            }
+            else if (elem.contains("FaceInfo"))
+            {
+                // 面轮廓线：[{"start":{x,y,z},"end":{x,y,z}}, ...]
+                // 与 Ground 同为独立线段数组，但元素直接含 start/end（无 Line 包装）。
+                item.kind = JsonWireKind::FaceInfo;
+                item.kindName = "FaceInfo";
+                const nlohmann::json& f = elem["FaceInfo"];
+                if (!f.is_array())
+                    throw std::runtime_error("FaceInfo 不是数组");
+                for (size_t fi = 0; fi < f.size(); ++fi)
+                {
+                    const nlohmann::json& seg = f[fi];
+                    if (!seg.is_object() || !seg.contains("start") || !seg.contains("end"))
+                        throw std::runtime_error("FaceInfo 第" + std::to_string(fi + 1)
+                                                 + " 项缺少 start/end");
+                    gp_Pnt ps, pe;
+                    if (!ParseJsonPointCI(seg["start"], ps, "FaceInfo.start") ||
+                        !ParseJsonPointCI(seg["end"],   pe, "FaceInfo.end"))
+                        throw std::runtime_error("FaceInfo 第" + std::to_string(fi + 1)
+                                                 + " 项端点非法");
+                    item.face.lines.push_back(std::make_pair(ps, pe));
+                }
+                if (item.face.lines.empty())
+                    throw std::runtime_error("FaceInfo 数组为空");
+            }
             else
             {
                 // 其他未知类型：记录键并跳过
@@ -2968,7 +3022,8 @@ static bool LoadJsonWireItems(const char* file, std::vector<JsonWireItem>& items
                     if (!keys.empty()) keys += ",";
                     keys += it.key();
                 }
-                std::cout << "提示：第" << (idx + 1) << " 条为非 Prism/Sweep/Box 类型 ["
+                std::cout << "提示：第" << (idx + 1)
+                          << " 条为非 Prism/Sweep/Box/Ground/FaceInfo 类型 ["
                           << keys << "]，跳过" << std::endl;
             }
         }
@@ -2985,11 +3040,12 @@ static bool LoadJsonWireItems(const char* file, std::vector<JsonWireItem>& items
 
     if (items.empty())
     {
-        std::cout << "错误：JSON中没有任何 Prism/Sweep/Box 定义" << std::endl;
+        std::cout << "错误：JSON中没有任何 Prism/Sweep/Box/Ground/FaceInfo 定义" << std::endl;
         return false;
     }
     std::cout << "JSON数据读取完成: " << file << "，共 " << items.size()
-              << " 条线框定义（跳过" << skipped << "条非 Prism/Sweep/Box）" << std::endl;
+              << " 条线框定义（跳过" << skipped
+              << "条非 Prism/Sweep/Box/Ground/FaceInfo）" << std::endl;
     return true;
 }
 
@@ -3827,6 +3883,62 @@ int ShapeClassTest()
 }
 
 // ============================================================
+// CShape_Box::ExpandBox 外扩/收缩测试
+// 覆盖：1) 用户示例：半长 100 + 10 -> 110（中心不动、方向不变）
+//       2) 负值收缩：110 - 60 -> 50
+//       3) 收缩超过当前半长（50 - 60 < 0）应拒绝并保持原值
+// 返回 0 = 全部通过；-1 = 存在失败项。
+// ============================================================
+int ExpandBoxTest()
+{
+    std::cout << "\n========== CShape_Box::ExpandBox 外扩/收缩测试 ==========" << std::endl;
+    int passCount = 0;
+    const int totalCount = 7;
+    const double tol = 1.0e-9;
+
+    auto expect = [&](bool cond, const char* what)
+    {
+        std::cout << (cond ? "  [通过] " : "  [失败] ") << what << std::endl;
+        if (cond) ++passCount;
+    };
+
+    CShape_Box box(gp_Pnt(0.0, 0.0, 0.0),
+                   gp_Vec(100.0, 0.0, 0.0),
+                   gp_Vec(0.0, 100.0, 0.0),
+                   gp_Vec(0.0, 0.0, 100.0));
+
+    // 用例1：+10 -> 半长 110（全尺寸 220），中心不动
+    expect(box.ExpandBox(10.0), "ExpandBox(10.0) 返回 true");
+    double sx = 0.0, sy = 0.0, sz = 0.0;
+    box.GetSize(sx, sy, sz);
+    expect(std::fabs(sx - 220.0) < tol && std::fabs(sy - 220.0) < tol && std::fabs(sz - 220.0) < tol,
+           "三向全尺寸均为 220（半长 110）");
+    expect(box.GetCenter().Distance(gp_Pnt(0.0, 0.0, 0.0)) < tol, "中心仍为 (0,0,0)");
+
+    // 用例2：-60 -> 半长 50（全尺寸 100），方向不变
+    expect(box.ExpandBox(-60.0), "ExpandBox(-60.0) 返回 true");
+    box.GetSize(sx, sy, sz);
+    expect(std::fabs(sx - 100.0) < tol && std::fabs(sy - 100.0) < tol && std::fabs(sz - 100.0) < tol,
+           "收缩后三向全尺寸均为 100（半长 50）");
+    gp_Vec dx, dy, dz;
+    box.GetDir(dx, dy, dz);
+    expect(dx.Dot(gp_Vec(1.0, 0.0, 0.0)) > 1.0 - tol
+           && dy.Dot(gp_Vec(0.0, 1.0, 0.0)) > 1.0 - tol
+           && dz.Dot(gp_Vec(0.0, 0.0, 1.0)) > 1.0 - tol,
+           "收缩后三轴方向不变");
+
+    // 用例3：收缩超过当前半长（新半长 < 0）应拒绝，盒保持原值
+    const bool bReject = box.ExpandBox(-60.0);
+    box.GetSize(sx, sy, sz);
+    expect(!bReject && std::fabs(sx - 100.0) < tol && std::fabs(sy - 100.0) < tol
+           && std::fabs(sz - 100.0) < tol && box.isValid(),
+           "收缩超过当前半长（50 - 60 < 0）时拒绝并保持原值");
+
+    std::cout << "结果：" << passCount << "/" << totalCount << " 通过" << std::endl;
+    return passCount == totalCount ? 0 : -1;
+}
+
+// ============================================================
 // CShape_Box::CombineBox 合并测试
 // 覆盖：1) 两盒远离  2) 两盒相交（B 轴序置换）  3) 两盒包含
 //       4) 任意方向同向相交  5) B 绕 Z 旋转 45°（合并 = A 轴系 AABB）
@@ -4143,11 +4255,13 @@ static TopoDS_Shape BuildGroupTotalBox(const JsonBoxItem& frame,
     if (!hasVertex)
         return TopoDS_Shape();
 
-    const double sizeX = lmax[0] - lmin[0];
-    const double sizeY = lmax[1] - lmin[1];
+    //左右前后放大100
+    const double sizeX = lmax[0] - lmin[0] + 200;
+    const double sizeY = lmax[1] - lmin[1] + 200;
     const double sizeZ = lmax[2] - lmin[2];
     if (sizeX <= 0.0 || sizeY <= 0.0 || sizeZ <= 0.0)
         return TopoDS_Shape();
+
 
     // 总 box 的最小角点（局部坐标 lmin 在 frame 下的 3D 位置）
     const gp_Pnt origin = frame.minimumPoint
@@ -4157,6 +4271,35 @@ static TopoDS_Shape BuildGroupTotalBox(const JsonBoxItem& frame,
 
     gp_Ax2 ax2(origin, gp_Dir(vz), gp_Dir(vx));
     return BRepPrimAPI_MakeBox(ax2, sizeX, sizeY, sizeZ).Shape();
+}
+
+// ============================================================================
+// 线段数组 -> 由若干 3D 边组成的 Compound（Ground / FaceInfo 共用）
+// 每段独立给出 start/end，按 3D 坐标直接连线，保持真实空间位置；
+// 退化段（起终点重合）跳过。全部段均退化时返回空 Shape。
+// ============================================================================
+static TopoDS_Shape BuildSegmentLines(const std::vector<std::pair<gp_Pnt, gp_Pnt> >& lines)
+{
+    BRep_Builder builder;
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+
+    int added = 0;
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        const gp_Pnt& a = lines[i].first;
+        const gp_Pnt& b = lines[i].second;
+        if (a.Distance(b) < 1.0e-9)
+            continue;   // 退化段跳过
+        BRepBuilderAPI_MakeEdge mkEdge(a, b);
+        if (!mkEdge.IsDone())
+            continue;
+        builder.Add(compound, mkEdge.Edge());
+        ++added;
+    }
+    if (added == 0)
+        return TopoDS_Shape();
+    return compound;
 }
 
 // ============================================================================
@@ -4173,18 +4316,26 @@ static TopoDS_Shape BuildGroupTotalBox(const JsonBoxItem& frame,
 // 由 main.cpp 以红色文字显示）。
 // 同一 GroupID 的 box 合并为一个总 box（groupBoxes 输出，由 main.cpp 以透明实体 +
 // 虚线边框显示，仅可见边框）。
+// Ground 地面线（{"Ground":[{"Line":{"start":{x,y,z},"end":{x,y,z}}},...]}）与
+// FaceInfo 面轮廓线（{"FaceInfo":[{"start":{x,y,z},"end":{x,y,z}},...]}）逐段转成
+// 3D 线段并按条目汇总为 Compound（groundLines / faceLines 输出，由 main.cpp
+// 分别以红色 / 黄色线框显示）。
 // 返回：0 = 全部成功；-1 = 解析失败或存在建模失败条目。
 // ============================================================================
 int JsonBoxTest(const char* file, TopoDS_Shape& resultModel,
                 std::vector<TopoDS_Shape>& crossShapes,
                 std::vector<TextViewLabel>& numberLabels,
-                std::vector<TopoDS_Shape>& groupBoxes)
+                std::vector<TopoDS_Shape>& groupBoxes,
+                std::vector<TopoDS_Shape>& groundLines,
+                std::vector<TopoDS_Shape>& faceLines)
 {
     std::cout << "\n--- JSON 包围盒测试（文件: " << file << "）---" << std::endl;
     resultModel = TopoDS_Shape();
     crossShapes.clear();
     numberLabels.clear();
     groupBoxes.clear();
+    groundLines.clear();
+    faceLines.clear();
 
     // 1. 解析（LoadJsonWireItems 同时支持 {"Box":{...}} 包装与扁平两种写法）
     std::vector<JsonWireItem> items;
@@ -4207,6 +4358,38 @@ int JsonBoxTest(const char* file, TopoDS_Shape& resultModel,
     for (size_t i = 0; i < items.size(); ++i)
     {
         const JsonWireItem& it = items[i];
+        if (it.kind == JsonWireKind::Ground)
+        {
+            // 地面线：逐段生成 3D 边，按条目汇总为 Compound，供红色线框显示
+            TopoDS_Shape ground = BuildSegmentLines(it.ground.lines);
+            if (!ground.IsNull())
+            {
+                groundLines.push_back(ground);
+                std::cout << "[第" << (i + 1) << "条] Ground 线段数=" << it.ground.lines.size()
+                          << "，已生成地面线" << std::endl;
+            }
+            else
+            {
+                std::cout << "提示：第" << (i + 1) << " 条 Ground 无有效线段，跳过" << std::endl;
+            }
+            continue;
+        }
+        if (it.kind == JsonWireKind::FaceInfo)
+        {
+            // 面轮廓线：逐段生成 3D 边，按条目汇总为 Compound，供黄色线框显示
+            TopoDS_Shape face = BuildSegmentLines(it.face.lines);
+            if (!face.IsNull())
+            {
+                faceLines.push_back(face);
+                std::cout << "[第" << (i + 1) << "条] FaceInfo 线段数=" << it.face.lines.size()
+                          << "，已生成面轮廓线" << std::endl;
+            }
+            else
+            {
+                std::cout << "提示：第" << (i + 1) << " 条 FaceInfo 无有效线段，跳过" << std::endl;
+            }
+            continue;
+        }
         if (it.kind != JsonWireKind::Box)
         {
             ++skipCount;
@@ -4371,6 +4554,7 @@ int JsonBoxTest(const char* file, TopoDS_Shape& resultModel,
     std::cout << "\n汇总：Box=" << boxCount << " 成功=" << okCount << " 失败=" << failCount
               << " 跳过=" << skipCount << " 平面交叉线=" << crossShapes.size()
               << " 编号标注=" << numberLabels.size() << " 组总box=" << groupBoxes.size()
+              << " 地面线=" << groundLines.size() << " 面轮廓线=" << faceLines.size()
               << " 整体范围 X[" << xmin << "," << xmax << "] Y[" << ymin << "," << ymax
               << "] Z[" << zmin << "," << zmax << "]" << std::endl;
 

@@ -29,6 +29,12 @@ int main()
     // 收集同一 GroupID 的 box 合并后的总 box（透明实体 + 虚线边框显示）
     std::vector<TopoDS_Shape> boxGroupShapes;
 
+    // 收集 JSON 中的 Ground 地面线（3D 线段，红色线框显示）
+    std::vector<TopoDS_Shape> groundLines;
+
+    // 收集 JSON 中的 FaceInfo 面轮廓线（3D 线段，黄色线框显示）
+    std::vector<TopoDS_Shape> faceLines;
+
     // JSON 线框扫掠测试（test3.txt：闭合多段线截面 + 单段路径，逐条建模汇总）
     if(0)
     {
@@ -60,7 +66,8 @@ int main()
     // 带 PlaneInfo 的 Box 额外输出对应面上的交叉线，并输出按 JSON 顺序从 1 开始的编号标注）
     {
         TopoDS_Shape jsonBoxModel;
-        JsonBoxTest("test6.txt", jsonBoxModel, boxCrossShapes, boxNumberLabels, boxGroupShapes);
+        JsonBoxTest("test6.txt", jsonBoxModel, boxCrossShapes, boxNumberLabels, boxGroupShapes,
+                    groundLines, faceLines);
         if (!jsonBoxModel.IsNull())
         {
             viewShapes.push_back(jsonBoxModel);
@@ -72,6 +79,9 @@ int main()
 
     // CShape_Box::CombineBox 合并测试（远离/相交/包含/任意方向，输出 DXF）
     CombineBoxTest();
+
+    // CShape_Box::ExpandBox 外扩/收缩测试（中心不动，半长整体加 dLen；收缩退化则拒绝）
+    ExpandBoxTest();
 
     // ========================================================================
     // 可视化：将上面测试生成的模型显示到 OCCT 视图
@@ -102,6 +112,18 @@ int main()
             {
                 viewer.DisplayShapeDashed(boxGroupShapes[i],
                                           Quantity_Color(Quantity_NOC_GREEN), 1.0, 2.0);
+            }
+            // Ground 地面线：红色线框，与 Box 平面交叉线同一颜色定义
+            for (size_t i = 0; i < groundLines.size(); ++i)
+            {
+                viewer.DisplayShape(groundLines[i],
+                                    Quantity_Color(Quantity_NOC_RED), AIS_WireFrame);
+            }
+            // FaceInfo 面轮廓线：黄色线框，同样走默认图层，不干扰其它内容
+            for (size_t i = 0; i < faceLines.size(); ++i)
+            {
+                viewer.DisplayShape(faceLines[i],
+                                    Quantity_Color(Quantity_NOC_YELLOW), AIS_WireFrame);
             }
             viewer.FitAll();
             viewer.Run();
